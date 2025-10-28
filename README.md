@@ -241,7 +241,30 @@ sudo apt install ssh
 torsocks ssh -p 22 <username>@<your_onion>.onion
 ```
 
+### With a Tor hidden service, Fail2Ban won’t really help.
+SSH sees all logins as coming from 127.0.0.1 (Tor connects locally), so Fail2Ban either won’t trigger or would try to ban localhost (which is ignored by default, and banning it would lock everyone out).
+## What to do instead (works reliably with Tor)
+Harden SSH itself:
+```bash
+sudo micro /etc/ssh/sshd_config
+```
+Add/ensure:
+```nginx
+ListenAddress 127.0.0.1
+PermitRootLogin no
+PasswordAuthentication yes
+MaxAuthTries 3
+LoginGraceTime 30
+MaxStartups 3:30:10
+AllowUsers your_usernames_here
+UseDNS no
+GSSAPIAuthentication no
+```
 
+Then 
+```bash
+sudo sshd -t && sudo systemctl restart ssh
+```
 
 ### 🔒 Security Notes
 
