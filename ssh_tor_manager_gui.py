@@ -253,6 +253,8 @@ class ManagerGUIV2(tk.Tk):
         self.hidden_service_dir_var = tk.StringVar(value="/var/lib/tor/ssh_service")
         self.onion_var = tk.StringVar(value="(not available yet)")
         self.connect_cmd_var = tk.StringVar(value="torsocks ssh -p 22 <username>@<onion>.onion")
+        self.endpoint_mode_var = tk.StringVar(value="Password authentication enabled")
+        self.endpoint_setup_commands = ""
 
         self.ssh_state = tk.StringVar(value="unknown")
         self.tor_state = tk.StringVar(value="unknown")
@@ -279,6 +281,8 @@ class ManagerGUIV2(tk.Tk):
         self._configure_style()
         self._build_layout()
         self.apply_theme(self.theme_name)
+        self.port_var.trace_add("write", lambda *_: self.update_endpoint_preview())
+        self.password_auth_var.trace_add("write", lambda *_: self.update_endpoint_preview())
         self.refresh_all()
 
         self.after(5000, self._speed_tick)
@@ -461,6 +465,9 @@ class ManagerGUIV2(tk.Tk):
             command=lambda: self.copy_to_clipboard(self.onion_var.get(), "Onion address copied."),
         ).pack(anchor=tk.W, pady=(0, 10))
 
+        ttk.Label(endpoint_tab, text="Endpoint Mode", style="Body.TLabel").pack(anchor=tk.W)
+        ttk.Label(endpoint_tab, textvariable=self.endpoint_mode_var, style="Value.TLabel").pack(anchor=tk.W, pady=(2, 8))
+
         ttk.Label(endpoint_tab, text="Connection Command", style="Body.TLabel").pack(anchor=tk.W)
         ttk.Label(
             endpoint_tab,
@@ -474,6 +481,16 @@ class ManagerGUIV2(tk.Tk):
             text="Copy Connection Command",
             command=lambda: self.copy_to_clipboard(self.connect_cmd_var.get(), "Connection command copied."),
         ).pack(anchor=tk.W)
+
+        ttk.Label(endpoint_tab, text="Other Device Setup Commands", style="Body.TLabel").pack(anchor=tk.W, pady=(12, 6))
+        self.endpoint_setup_text = ScrolledText(endpoint_tab, wrap=tk.WORD, height=8, font=("Consolas", 10))
+        self.endpoint_setup_text.pack(fill=tk.BOTH, expand=True)
+        self.endpoint_setup_text.configure(state=tk.DISABLED)
+        ttk.Button(
+            endpoint_tab,
+            text="Copy Setup Commands",
+            command=lambda: self.copy_to_clipboard(self.endpoint_setup_commands, "Setup commands copied."),
+        ).pack(anchor=tk.W, pady=(8, 0))
 
         ttk.Label(logs_tab, text="Logs Viewer (journalctl)", style="CardTitle.TLabel").pack(anchor=tk.W, pady=(0, 10))
         logs_controls = ttk.Frame(logs_tab, style="Card.TFrame")
@@ -833,10 +850,9 @@ class ManagerGUIV2(tk.Tk):
 
         if onion:
             self.onion_var.set(onion)
-            self.connect_cmd_var.set(f"torsocks ssh -p {port} <username>@{onion}")
         else:
             self.onion_var.set("(not available yet)")
-            self.connect_cmd_var.set(f"torsocks ssh -p {port} <username>@<onion>.onion")
+        self.update_endpoint_preview()
 
     def refresh_all(self):
         self._ensure_components(prompt_required=False)
@@ -1044,6 +1060,52 @@ class ManagerGUIV2(tk.Tk):
         if self.auto_logs_var.get():
             self.refresh_logs()
         self.after(8000, self._logs_tick)
+
+    def _render_endpoint_setup_commands(self):
+        if not hasattr(self, "endpoint_setup_text"):
+            return
+        self.endpoint_setup_text.configure(state=tk.NORMAL)
+        self.endpoint_setup_text.delete("1.0", tk.END)
+        self.endpoint_setup_text.insert(tk.END, self.endpoint_setup_commands)
+        self.endpoint_setup_text.configure(state=tk.DISABLED)
+        self.endpoint_setup_text.yview_moveto(0.0)
+
+    def update_endpoint_preview(self):
+        try:
+            port = int(self.port_var.get())
+            if port < 1 or port > 65535:
+                raise ValueError
+        except (ValueError, TypeError):
+            port = 22
+
+        onion = self.onion_var.get().strip()
+        target_onion = onion if onion and not onion.startswith("(") else "<onion>.onion"
+        password_auth_enabled = bool(self.password_auth_var.get())
+
+        if password_auth_enabled:
+            self.endpoint_mode_var.set("Password authentication enabled")
+            self.connect_cmd_var.set(f"torsocks ssh -p {port} <username>@{target_onion}")
+            self.endpoint_setup_commands = (
+                "# On the other device (password login mode)\n"
+                f"torsocks ssh -p {port} <username>@{target_onion}\n\n"
+                "# Optional: switch to passwordless later\n"
+                "ssh-keygen -t ed25519 -a 100 -f ~/.ssh/id_ed25519_tor\n"
+                f"torsocks ssh-copy-id -i ~/.ssh/id_ed25519_tor.pub -p {port} <username>@{target_onion}\n"
+                f"torsocks ssh -i ~/.ssh/id_ed25519_tor -p {port} <username>@{target_onion}\n"
+            )
+        else:
+            self.endpoint_mode_var.set("Password authentication disabled (passwordless key required)")
+            self.connect_cmd_var.set(f"torsocks ssh -i ~/.ssh/id_ed25519_tor -p {port} <username>@{target_onion}")
+            self.endpoint_setup_commands = (
+                "# On the other device (Linux/WSL) - passwordless setup\n"
+                "ssh-keygen -t ed25519 -a 100 -f ~/.ssh/id_ed25519_tor\n"
+                f"torsocks ssh-copy-id -i ~/.ssh/id_ed25519_tor.pub -p {port} <username>@{target_onion}\n"
+                "\n"
+                "# Connect using key (no password login)\n"
+                f"torsocks ssh -i ~/.ssh/id_ed25519_tor -p {port} <username>@{target_onion}\n"
+            )
+
+        self._render_endpoint_setup_commands()
 
     def copy_to_clipboard(self, text, status_message):
         if not text or text.startswith("("):
