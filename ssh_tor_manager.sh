@@ -21,6 +21,7 @@ HIDDEN_SERVICE_DIR="$HIDDEN_SERVICE_DIR_DEFAULT"
 ONION_HOSTNAME="$ONION_HOSTNAME_DEFAULT"
 
 SUDO=""
+APT_UPDATED=0
 
 log() {
   printf '[%s] %s\n' "$APP_NAME" "$*"
@@ -45,6 +46,7 @@ Options:
   --show       Show current saved/live configuration and exit
   --apply      Apply saved configuration immediately and exit
   --wizard     Run one guided setup flow and apply it
+  --remove     Interactive remove menu (tor/fail2ban/both)
   -h, --help   Show this help
 EOF
 }
@@ -63,6 +65,14 @@ run_as_root() {
     "$SUDO" "$@"
   else
     "$@"
+  fi
+}
+
+apt_update_once() {
+  if [[ "$APT_UPDATED" -eq 0 ]]; then
+    log "Running apt-get update..."
+    run_as_root apt-get update
+    APT_UPDATED=1
   fi
 }
 
@@ -255,9 +265,50 @@ read_onion_hostname() {
 }
 
 install_dependencies() {
-  log "Installing dependencies..."
-  run_as_root apt-get update
-  run_as_root apt-get install -y tor openssh-server fail2ban torsocks micro pv
+  log "Ensuring dependencies are installed..."
+  ensure_core_dependencies
+  ensure_optional_fail2ban
+  install_if_missing "micro" "micro"
+  install_if_missing "pv" "pv"
+}
+
+install_if_missing() {
+  local package="$1"
+  local bin_check="${2:-}"
+  local dpkg_ok=1
+  local need_install=0
+
+  if run_as_root dpkg -s "$package" >/dev/null 2>&1; then
+    dpkg_ok=0
+  fi
+
+  if [[ "$dpkg_ok" -ne 0 ]]; then
+    need_install=1
+  fi
+
+  if [[ -n "$bin_check" ]] && ! command -v "$bin_check" >/dev/null 2>&1; then
+    need_install=1
+  fi
+
+  if [[ "$need_install" -eq 0 ]]; then
+    return 0
+  fi
+
+  log "Installing missing package: $package"
+  apt_update_once
+  run_as_root apt-get install -y "$package"
+}
+
+ensure_core_dependencies() {
+  install_if_missing "openssh-server" "sshd"
+  install_if_missing "tor" "tor"
+  install_if_missing "torsocks" "torsocks"
+}
+
+ensure_optional_fail2ban() {
+  if [[ "$ENABLE_FAIL2BAN" == "yes" ]]; then
+    install_if_missing "fail2ban" "fail2ban-client"
+  fi
 }
 
 create_backups() {
@@ -289,6 +340,9 @@ apply_configuration() {
 
   if [[ "$install_if_needed" == "yes" ]]; then
     install_dependencies
+  else
+    ensure_core_dependencies
+    ensure_optional_fail2ban
   fi
   create_backups
 
@@ -364,6 +418,94 @@ maxretry = 3"
   fi
 
   save_state
+}
+
+remove_managed_block() {
+  local file="$1"
+  local cleaned_tmp final_tmp
+  local parent_dir
+
+  parent_dir="$(dirname "$file")"
+  if ! run_as_root test -d "$parent_dir"; then
+    return 0
+  fi
+
+  cleaned_tmp="$(mktemp)"
+  final_tmp="$(mktemp)"
+
+  run_as_root touch "$file"
+  run_as_root awk -v begin="$MANAGED_BEGIN" -v end="$MANAGED_END" '
+    $0 == begin { in_block=1; next }
+    $0 == end   { in_block=0; next }
+    !in_block   { print }
+  ' "$file" > "$cleaned_tmp"
+
+  cat "$cleaned_tmp" > "$final_tmp"
+  run_as_root install -m 0644 "$final_tmp" "$file"
+  rm -f "$cleaned_tmp" "$final_tmp"
+}
+
+remove_fail2ban() {
+  log "Removing Fail2Ban package and managed config..."
+  run_as_root systemctl stop fail2ban >/dev/null 2>&1 || true
+  run_as_root systemctl disable fail2ban >/dev/null 2>&1 || true
+  if run_as_root test -d "/etc/fail2ban"; then
+    remove_managed_block "/etc/fail2ban/jail.local"
+  fi
+  run_as_root apt-get remove -y fail2ban >/dev/null 2>&1 || true
+  run_as_root apt-get autoremove -y >/dev/null 2>&1 || true
+  ENABLE_FAIL2BAN="no"
+  log "Fail2Ban removed."
+}
+
+remove_tor() {
+  log "Removing Tor package and managed config..."
+  run_as_root systemctl stop tor >/dev/null 2>&1 || true
+  run_as_root systemctl stop tor@default >/dev/null 2>&1 || true
+  run_as_root systemctl disable tor >/dev/null 2>&1 || true
+  run_as_root systemctl disable tor@default >/dev/null 2>&1 || true
+  if run_as_root test -d "/etc/tor"; then
+    remove_managed_block "/etc/tor/torrc"
+  fi
+  run_as_root apt-get remove -y tor torsocks >/dev/null 2>&1 || true
+  run_as_root apt-get autoremove -y >/dev/null 2>&1 || true
+  ONION_HOSTNAME=""
+  log "Tor removed."
+}
+
+remove_components_menu() {
+  local choice
+  load_state
+  printf '\n=== Remove Components ===\n'
+  printf '1) Remove Fail2Ban only\n'
+  printf '2) Remove Tor only\n'
+  printf '3) Remove both Fail2Ban and Tor\n'
+  printf '4) Cancel\n'
+  read -r -p "Choose [1-4]: " choice
+
+  case "$choice" in
+    1)
+      remove_fail2ban
+      ;;
+    2)
+      remove_tor
+      ;;
+    3)
+      remove_fail2ban
+      remove_tor
+      ;;
+    4)
+      log "Remove operation cancelled."
+      return 0
+      ;;
+    *)
+      warn "Invalid remove option."
+      return 1
+      ;;
+  esac
+
+  save_state
+  print_current_info
 }
 
 print_current_info() {
@@ -501,9 +643,10 @@ interactive_menu() {
     printf '5) Toggle Fail2Ban (apply immediately)\n'
     printf '6) Show current information\n'
     printf '7) Re-apply saved configuration\n'
-    printf '8) Exit\n'
+    printf '8) Remove tor/fail2ban components\n'
+    printf '9) Exit\n'
 
-    read -r -p "Choose [1-8]: " choice
+    read -r -p "Choose [1-9]: " choice
     case "$choice" in
       1) run_wizard ;;
       2) change_port_now ;;
@@ -512,8 +655,9 @@ interactive_menu() {
       5) toggle_fail2ban_now ;;
       6) print_current_info ;;
       7) reapply_saved_configuration ;;
-      8) break ;;
-      *) warn "Invalid option. Choose a number from 1 to 8." ;;
+      8) remove_components_menu ;;
+      9) break ;;
+      *) warn "Invalid option. Choose a number from 1 to 9." ;;
     esac
   done
 }
@@ -531,6 +675,9 @@ main() {
       ;;
     --wizard)
       run_wizard
+      ;;
+    --remove)
+      remove_components_menu
       ;;
     -h|--help)
       usage
