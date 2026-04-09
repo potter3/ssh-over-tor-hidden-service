@@ -70,6 +70,18 @@ sudo python3 ssh_tor_manager_gui.py
 
 ## 2) Interactive terminal manager
 
+### What it now handles automatically
+
+- Verifies required components and installs missing ones when needed:
+  - `openssh-server`
+  - `tor`
+  - `torsocks`
+  - `fail2ban` (when enabled)
+- Can remove components and related managed config blocks:
+  - Fail2Ban only
+  - Tor only
+  - both Tor and Fail2Ban
+
 ### Run
 
 ```bash
@@ -83,15 +95,36 @@ sudo ./ssh_tor_manager.sh
 sudo ./ssh_tor_manager.sh --show
 sudo ./ssh_tor_manager.sh --apply
 sudo ./ssh_tor_manager.sh --wizard
+sudo ./ssh_tor_manager.sh --remove
 ```
 
 - `--show`: displays current saved/live configuration, onion hostname, and connection command.
 - `--apply`: re-applies saved configuration to SSH/Tor/Fail2Ban immediately.
 - `--wizard`: runs guided prompts once, then applies the selected settings.
+- `--remove`: opens remove menu to uninstall Tor, Fail2Ban, or both (with managed config cleanup).
+
+### Remove menu (from interactive mode)
+
+From the app menu choose:
+- `8) Remove tor/fail2ban components`
+
+Then select:
+- remove Fail2Ban only
+- remove Tor only
+- remove both
 
 ---
 
 ## 3) One-shot setup script
+
+### What it now handles automatically
+
+- Checks required packages and installs missing ones instead of stopping:
+  - `tor`
+  - `openssh-server`
+  - `torsocks`
+  - `fail2ban` (only if `--enable-fail2ban yes`)
+- Treats helper tools (`micro`, `pv`) as optional and continues even if they are unavailable.
 
 ### Run
 
@@ -119,6 +152,7 @@ sudo ./setup_ssh_over_tor.sh \
 - Onion hostname appears after Tor hidden service is initialized.
 - The displayed "SSH speed" is latency to local SSH handshake (not internet bandwidth).
 - If you change SSH port in the manager, connection command updates accordingly.
+- If a component is missing, current scripts prefer installing requirements automatically to continue setup.
 
 ---
 
