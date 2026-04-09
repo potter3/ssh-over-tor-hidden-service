@@ -93,6 +93,7 @@ if ! command -v apt-get >/dev/null 2>&1; then
 fi
 
 SUDO=""
+APT_UPDATED=0
 if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   if ! command -v sudo >/dev/null 2>&1; then
     die "Run as root or install sudo"
@@ -105,6 +106,45 @@ run_as_root() {
     "$SUDO" "$@"
   else
     "$@"
+  fi
+}
+
+apt_update_once() {
+  if [[ "$APT_UPDATED" -eq 0 ]]; then
+    log "Running apt-get update..."
+    run_as_root apt-get update
+    APT_UPDATED=1
+  fi
+}
+
+package_installed() {
+  local package_name="$1"
+  local status
+  status="$(run_as_root dpkg-query -W -f='${db:Status-Status}' "$package_name" 2>/dev/null || true)"
+  [[ "$status" == "installed" ]]
+}
+
+ensure_package_installed() {
+  local package_name="$1"
+  if package_installed "$package_name"; then
+    log "Package already installed: $package_name"
+    return 0
+  fi
+  apt_update_once
+  log "Installing missing package: $package_name"
+  run_as_root apt-get install -y "$package_name"
+}
+
+install_optional_package() {
+  local package_name="$1"
+  if package_installed "$package_name"; then
+    return 0
+  fi
+  apt_update_once
+  if run_as_root apt-get install -y "$package_name" >/dev/null 2>&1; then
+    log "Installed optional package: $package_name"
+  else
+    log "Optional package not installed (continuing): $package_name"
   fi
 }
 
@@ -168,9 +208,15 @@ enable_service_any() {
   return 1
 }
 
-log "Installing dependencies..."
-run_as_root apt-get update
-run_as_root apt-get install -y tor openssh-server fail2ban torsocks micro pv
+log "Ensuring required packages are installed..."
+ensure_package_installed "tor"
+ensure_package_installed "openssh-server"
+ensure_package_installed "torsocks"
+if [[ "$ENABLE_FAIL2BAN" == "yes" ]]; then
+  ensure_package_installed "fail2ban"
+fi
+install_optional_package "micro"
+install_optional_package "pv"
 
 log "Creating backups..."
 backup_if_missing "/etc/ssh/sshd_config" "/etc/ssh/sshd_config.bak"
@@ -283,4 +329,4 @@ fi
 log "Setup complete."
 log "Onion hostname: $ONION_HOSTNAME"
 log "Saved hostname to: $HOSTNAME_OUTPUT_FILE"
-log "Connect with: torsocks ssh -p 22 <username>@$ONION_HOSTNAME"
+log "Connect with: torsocks ssh -p $SSH_PORT <username>@$ONION_HOSTNAME"
