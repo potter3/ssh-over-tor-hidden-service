@@ -85,6 +85,10 @@ sudo ./ssh_tor_manager.sh --apply
 sudo ./ssh_tor_manager.sh --wizard
 ```
 
+- `--show`: displays current saved/live configuration, onion hostname, and connection command.
+- `--apply`: re-applies saved configuration to SSH/Tor/Fail2Ban immediately.
+- `--wizard`: runs guided prompts once, then applies the selected settings.
+
 ---
 
 ## 3) One-shot setup script
