@@ -198,6 +198,34 @@ def save_state(values):
     os.chmod(STATE_FILE, 0o600)
 
 
+def clear_cached_onion_state():
+    values = parse_key_value_file(STATE_FILE)
+    values["ONION_HOSTNAME"] = ""
+    if "HIDDEN_SERVICE_DIR" not in values or not values["HIDDEN_SERVICE_DIR"]:
+        values["HIDDEN_SERVICE_DIR"] = "/var/lib/tor/ssh_service"
+    if "SSH_PORT" not in values or not values["SSH_PORT"]:
+        values["SSH_PORT"] = "22"
+    if "ALLOW_PASSWORD_AUTH" not in values or not values["ALLOW_PASSWORD_AUTH"]:
+        values["ALLOW_PASSWORD_AUTH"] = "yes"
+    if "MAX_STARTUPS" not in values or not values["MAX_STARTUPS"]:
+        values["MAX_STARTUPS"] = "10"
+    save_state(
+        {
+            "SSH_PORT": values["SSH_PORT"],
+            "ALLOW_PASSWORD_AUTH": values["ALLOW_PASSWORD_AUTH"],
+            "MAX_STARTUPS": values["MAX_STARTUPS"],
+            "HIDDEN_SERVICE_DIR": values["HIDDEN_SERVICE_DIR"],
+            "ONION_HOSTNAME": "",
+        }
+    )
+
+
+def remove_tor_hidden_service_data():
+    values = parse_key_value_file(STATE_FILE)
+    hidden_dir = values.get("HIDDEN_SERVICE_DIR", "/var/lib/tor/ssh_service").strip() or "/var/lib/tor/ssh_service"
+    run_command(["rm", "-rf", hidden_dir])
+
+
 def fetch_journal_logs(unit_name, lines):
     result = run_command(["journalctl", "-u", unit_name, "-n", str(lines), "--no-pager"])
     if result.returncode != 0:
