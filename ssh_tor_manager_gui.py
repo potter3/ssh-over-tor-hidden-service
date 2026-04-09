@@ -254,7 +254,6 @@ class ManagerGUIV2(tk.Tk):
         self.onion_var = tk.StringVar(value="(not available yet)")
         self.connect_cmd_var = tk.StringVar(value="torsocks ssh -p 22 <username>@<onion>.onion")
         self.endpoint_mode_var = tk.StringVar(value="Password authentication enabled")
-        self.endpoint_note_var = tk.StringVar(value="")
         self.setup_install_update_var = tk.StringVar(value="sudo apt update")
         self.setup_install_tools_var = tk.StringVar(value="sudo apt install -y openssh-client torsocks")
         self.setup_keygen_var = tk.StringVar(value="ssh-keygen -t ed25519 -a 100 -f ~/.ssh/id_ed25519_tor")
@@ -457,59 +456,94 @@ class ManagerGUIV2(tk.Tk):
         self.tabs = ttk.Notebook(bottom, style="Modern.TNotebook")
         self.tabs.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0))
 
-        endpoint_tab = ttk.Frame(self.tabs, style="Card.TFrame", padding=12)
+        endpoint_tab = ttk.Frame(self.tabs, style="Card.TFrame", padding=0)
         logs_tab = ttk.Frame(self.tabs, style="Card.TFrame", padding=12)
         self.tabs.add(endpoint_tab, text="Endpoint")
         self.tabs.add(logs_tab, text="Logs")
 
-        ttk.Label(endpoint_tab, text="Current Endpoint", style="CardTitle.TLabel").pack(anchor=tk.W, pady=(0, 10))
-        ttk.Label(endpoint_tab, text="Hidden Service Directory", style="Body.TLabel").pack(anchor=tk.W)
-        ttk.Label(endpoint_tab, textvariable=self.hidden_service_dir_var, style="Value.TLabel").pack(anchor=tk.W, pady=(2, 10))
-
-        ttk.Label(endpoint_tab, text="Onion Address", style="Body.TLabel").pack(anchor=tk.W)
-        ttk.Label(endpoint_tab, textvariable=self.onion_var, style="Value.TLabel").pack(anchor=tk.W, pady=(2, 8))
-        ttk.Button(
+        self.endpoint_canvas = tk.Canvas(
             endpoint_tab,
+            bg=self.palette["card"],
+            highlightthickness=0,
+            bd=0,
+        )
+        self.endpoint_scrollbar = ttk.Scrollbar(endpoint_tab, orient=tk.VERTICAL, command=self.endpoint_canvas.yview)
+        self.endpoint_canvas.configure(yscrollcommand=self.endpoint_scrollbar.set)
+
+        self.endpoint_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.endpoint_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.endpoint_content = ttk.Frame(self.endpoint_canvas, style="Card.TFrame", padding=12)
+        self.endpoint_canvas_window = self.endpoint_canvas.create_window(
+            (0, 0),
+            window=self.endpoint_content,
+            anchor="nw",
+        )
+
+        self.endpoint_content.bind(
+            "<Configure>",
+            lambda _e: self.endpoint_canvas.configure(scrollregion=self.endpoint_canvas.bbox("all")),
+        )
+        self.endpoint_canvas.bind(
+            "<Configure>",
+            lambda e: self.endpoint_canvas.itemconfigure(self.endpoint_canvas_window, width=e.width),
+        )
+
+        ttk.Label(self.endpoint_content, text="Current Endpoint", style="CardTitle.TLabel").pack(anchor=tk.W, pady=(0, 10))
+
+        ttk.Label(self.endpoint_content, text="Hidden Service Directory", style="Body.TLabel").pack(anchor=tk.W)
+        ttk.Label(self.endpoint_content, textvariable=self.hidden_service_dir_var, style="Value.TLabel").pack(anchor=tk.W, pady=(2, 8))
+        ttk.Button(
+            self.endpoint_content,
+            text="Copy Hidden Service Directory",
+            command=lambda: self.copy_to_clipboard(self.hidden_service_dir_var.get(), "Hidden service directory copied."),
+        ).pack(anchor=tk.W, pady=(0, 10))
+
+        ttk.Label(self.endpoint_content, text="Onion Address", style="Body.TLabel").pack(anchor=tk.W)
+        ttk.Label(self.endpoint_content, textvariable=self.onion_var, style="Value.TLabel").pack(anchor=tk.W, pady=(2, 8))
+        ttk.Button(
+            self.endpoint_content,
             text="Copy Onion Address",
             command=lambda: self.copy_to_clipboard(self.onion_var.get(), "Onion address copied."),
         ).pack(anchor=tk.W, pady=(0, 10))
 
-        ttk.Label(endpoint_tab, text="Endpoint Mode", style="Body.TLabel").pack(anchor=tk.W)
-        ttk.Label(endpoint_tab, textvariable=self.endpoint_mode_var, style="Value.TLabel").pack(anchor=tk.W, pady=(2, 8))
+        ttk.Label(self.endpoint_content, text="Endpoint Mode", style="Body.TLabel").pack(anchor=tk.W)
+        ttk.Label(self.endpoint_content, textvariable=self.endpoint_mode_var, style="Value.TLabel").pack(anchor=tk.W, pady=(2, 10))
 
-        ttk.Label(endpoint_tab, text="Connection Command", style="Body.TLabel").pack(anchor=tk.W)
+        ttk.Label(self.endpoint_content, text="Connection Command", style="Body.TLabel").pack(anchor=tk.W)
         ttk.Label(
-            endpoint_tab,
+            self.endpoint_content,
             textvariable=self.connect_cmd_var,
             style="Value.TLabel",
             wraplength=500,
             justify=tk.LEFT,
         ).pack(anchor=tk.W, pady=(2, 8))
         ttk.Button(
-            endpoint_tab,
+            self.endpoint_content,
             text="Copy Connection Command",
             command=lambda: self.copy_to_clipboard(self.connect_cmd_var.get(), "Connection command copied."),
-        ).pack(anchor=tk.W)
-        ttk.Label(endpoint_tab, text="Other Device Setup Commands", style="Body.TLabel").pack(anchor=tk.W, pady=(12, 6))
+        ).pack(anchor=tk.W, pady=(0, 12))
+
+        ttk.Label(self.endpoint_content, text="Client Setup Commands", style="Body.TLabel").pack(anchor=tk.W, pady=(0, 6))
         ttk.Label(
-            endpoint_tab,
+            self.endpoint_content,
             text=(
-                "Use these commands on the client device. "
-                "Each step has its own copy button."
+                "Use these commands on the client endpoint. "
+                "If tools already exist, skip install step."
             ),
             style="Muted.TLabel",
             wraplength=520,
             justify=tk.LEFT,
         ).pack(anchor=tk.W, pady=(0, 8))
 
-        self.endpoint_steps_card = ttk.Frame(endpoint_tab, style="Card.TFrame")
+        self.endpoint_steps_card = ttk.Frame(self.endpoint_content, style="Card.TFrame")
         self.endpoint_steps_card.pack(fill=tk.X)
         self.endpoint_steps_container = ttk.Frame(self.endpoint_steps_card, style="Card.TFrame")
         self.endpoint_steps_container.pack(fill=tk.X)
         self.endpoint_cmd_vars = []
 
         ttk.Button(
-            endpoint_tab,
+            self.endpoint_content,
             text="Copy All Setup Commands",
             command=self.copy_all_endpoint_setup,
         ).pack(anchor=tk.W, pady=(8, 0))
@@ -1093,7 +1127,7 @@ class ManagerGUIV2(tk.Tk):
         row = ttk.Frame(self.endpoint_steps_container, style="Card.TFrame")
         row.pack(fill=tk.X, pady=3)
 
-        ttk.Label(row, text=title, style="Body.TLabel", width=42).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(row, text=title, style="Body.TLabel", width=40).pack(side=tk.LEFT, padx=(0, 8))
         cmd_var = tk.StringVar(value=command_text)
         self.endpoint_cmd_vars.append(cmd_var)
         ttk.Label(
@@ -1149,33 +1183,21 @@ class ManagerGUIV2(tk.Tk):
 
         if password_auth_enabled:
             self.endpoint_mode_var.set("Password authentication enabled")
-            self.endpoint_note_var.set(
-                "Password login over Tor is allowed. You can also prepare passwordless access now."
-            )
             self.connect_cmd_var.set(password_connect_cmd)
             steps = [
-                ("Step 2) Install tools in WSL", self.setup_install_update_var.get()),
-                ("Step 2) Install tools in WSL", self.setup_install_tools_var.get()),
-                ("Step 3) Generate SSH key in WSL or any terminal", self.setup_keygen_var.get()),
-                ("Step 4) Copy key to your onion SSH server", self.setup_copyid_var.get()),
-                ("Step 5) Test passwordless login", self.setup_test_var.get()),
-                (
-                    "Direct password login through Tor (while password auth is ON)",
-                    password_connect_cmd,
-                ),
+                ("Install tools (skip if already installed on client endpoint)", self.setup_install_update_var.get()),
+                ("Install tools (skip if already installed on client endpoint)", self.setup_install_tools_var.get()),
+                ("Connection command", password_connect_cmd),
             ]
         else:
             self.endpoint_mode_var.set("Password authentication disabled (passwordless key required)")
-            self.endpoint_note_var.set(
-                "Use key-based login only. If copy-id fails, temporarily enable password auth or add key manually."
-            )
             self.connect_cmd_var.set(test_cmd)
             steps = [
-                ("Step 2) Install tools in WSL", self.setup_install_update_var.get()),
-                ("Step 2) Install tools in WSL", self.setup_install_tools_var.get()),
-                ("Step 3) Generate SSH key in WSL or any terminal", self.setup_keygen_var.get()),
-                ("Step 4) Copy key to your onion SSH server", self.setup_copyid_var.get()),
-                ("Step 5) Test passwordless login", self.setup_test_var.get()),
+                ("Install tools (skip if already installed on client endpoint)", self.setup_install_update_var.get()),
+                ("Install tools (skip if already installed on client endpoint)", self.setup_install_tools_var.get()),
+                ("Generate SSH key", self.setup_keygen_var.get()),
+                ("Copy key to your onion server", self.setup_copyid_var.get()),
+                ("Connection command", self.setup_test_var.get()),
             ]
 
         self._set_endpoint_steps(steps)
