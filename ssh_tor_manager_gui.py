@@ -400,6 +400,13 @@ class ManagerGUIV2(tk.Tk):
         ttk.Button(
             self.services_card, text="Refresh Services", command=self.refresh_service_status, style="Accent.TButton"
         ).pack(anchor=tk.W, pady=(10, 0))
+        ttk.Label(
+            self.services_card,
+            text="To reinstall missing services/packages, click Apply Settings.",
+            style="Muted.TLabel",
+            wraplength=420,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(6, 0))
 
         self.speed_card = ttk.Frame(top, style="Card.TFrame", padding=12)
         self.speed_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0))
@@ -1090,6 +1097,19 @@ class ManagerGUIV2(tk.Tk):
         except OSError as exc:
             messagebox.showerror("Write Error", f"Failed writing config files:\n{exc}")
             return
+
+        # Some distros require this runtime directory before sshd validation/start.
+        if not Path("/run/sshd").exists():
+            try:
+                Path("/run/sshd").mkdir(parents=True, exist_ok=True)
+                os.chmod("/run/sshd", 0o755)
+                self._append_log("[config] Created missing runtime directory: /run/sshd")
+            except OSError as exc:
+                messagebox.showerror(
+                    "Runtime Directory Error",
+                    f"Failed creating /run/sshd:\n{exc}",
+                )
+                return
 
         test_sshd = run_command(["sshd", "-t"])
         if test_sshd.returncode != 0:
