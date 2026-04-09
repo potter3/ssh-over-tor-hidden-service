@@ -468,9 +468,14 @@ class ManagerGUIV2(tk.Tk):
             bd=0,
         )
         self.endpoint_scrollbar = ttk.Scrollbar(endpoint_tab, orient=tk.VERTICAL, command=self.endpoint_canvas.yview)
-        self.endpoint_canvas.configure(yscrollcommand=self.endpoint_scrollbar.set)
+        self.endpoint_hscrollbar = ttk.Scrollbar(endpoint_tab, orient=tk.HORIZONTAL, command=self.endpoint_canvas.xview)
+        self.endpoint_canvas.configure(
+            yscrollcommand=self.endpoint_scrollbar.set,
+            xscrollcommand=self.endpoint_hscrollbar.set,
+        )
 
         self.endpoint_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.endpoint_hscrollbar.pack(side=tk.BOTTOM, fill=tk.X)
         self.endpoint_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self.endpoint_content = ttk.Frame(self.endpoint_canvas, style="Card.TFrame", padding=12)
@@ -484,9 +489,10 @@ class ManagerGUIV2(tk.Tk):
             "<Configure>",
             lambda _e: self.endpoint_canvas.configure(scrollregion=self.endpoint_canvas.bbox("all")),
         )
+        # Keep natural content width for horizontal scrolling while still allowing resize.
         self.endpoint_canvas.bind(
             "<Configure>",
-            lambda e: self.endpoint_canvas.itemconfigure(self.endpoint_canvas_window, width=e.width),
+            lambda _e: self.endpoint_canvas.configure(scrollregion=self.endpoint_canvas.bbox("all")),
         )
 
         ttk.Label(self.endpoint_content, text="Current Endpoint", style="CardTitle.TLabel").pack(anchor=tk.W, pady=(0, 10))
