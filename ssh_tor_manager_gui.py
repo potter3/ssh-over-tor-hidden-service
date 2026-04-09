@@ -824,8 +824,24 @@ class ManagerGUIV2(tk.Tk):
             run_command(["systemctl", "stop", "tor@default"])
             run_command(["systemctl", "disable", self.tor_unit])
             run_command(["systemctl", "disable", "tor@default"])
+            previous_tor_hidden_dir = parse_hidden_service_dir(TOR_CONFIG)
             self._remove_managed_block(TOR_CONFIG)
             if self._run_remove_package(["tor", "torsocks"]):
+                # Remove all known hidden-service directories so stale hostname files do not remain.
+                state_values = parse_key_value_file(STATE_FILE)
+                candidate_dirs = {
+                    "/var/lib/tor/ssh_service",
+                    previous_tor_hidden_dir,
+                    self.hidden_service_dir_var.get().strip(),
+                    state_values.get("HIDDEN_SERVICE_DIR", "").strip(),
+                }
+                for hidden_dir in sorted(d for d in candidate_dirs if d):
+                    run_command(["rm", "-rf", hidden_dir])
+                    self._append_log(f"[remove] Removed Tor hidden-service data: {hidden_dir}")
+
+                clear_cached_onion_state()
+                self._append_log("[remove] Cleared cached onion state from manager state file.")
+                self.hidden_service_dir_var.set("/var/lib/tor/ssh_service")
                 self.onion_var.set("(not available yet)")
                 self.connect_cmd_var.set("torsocks ssh -p 22 <username>@<onion>.onion")
                 self.set_status("Tor removed.")
@@ -843,6 +859,7 @@ class ManagerGUIV2(tk.Tk):
 
         self._update_component_status()
         self.refresh_service_status()
+        self.refresh_config()
         self.refresh_logs()
 
     def _prompt_install_or_skip(self, component_key, required=False):
