@@ -370,6 +370,7 @@ class ManagerGUIV2(tk.Tk):
         self.service_status_labels = {}
         self.toggle_widgets = {}
         self.restart_buttons = {}
+        self.delete_buttons = {}
         self.service_controls = {}
         self._build_service_row(
             "SSH",
@@ -617,6 +618,17 @@ class ManagerGUIV2(tk.Tk):
         restart_button = ttk.Button(row, text="Restart", command=lambda u=unit_name: self.restart_service(u))
         restart_button.pack(side=tk.LEFT)
         self.restart_buttons[unit_name] = restart_button
+
+        delete_button = None
+        if component_key in {"tor", "fail2ban"}:
+            delete_button = ttk.Button(
+                row,
+                text="🗑 Delete",
+                command=lambda c=component_key: self.delete_component(c),
+            )
+            delete_button.pack(side=tk.LEFT, padx=(6, 0))
+            self.delete_buttons[unit_name] = delete_button
+
         self.service_controls[component_key] = {
             "unit": unit_name,
             "state_var": state_var,
@@ -624,6 +636,7 @@ class ManagerGUIV2(tk.Tk):
             "toggle_text_var": toggle_text_var,
             "toggle_widget": toggle,
             "restart_widget": restart_button,
+            "delete_widget": delete_button,
         }
 
     def _append_log(self, text):
@@ -671,6 +684,8 @@ class ManagerGUIV2(tk.Tk):
             widget_state = tk.NORMAL if available else tk.DISABLED
             control["toggle_widget"].configure(state=widget_state)
             control["restart_widget"].configure(state=widget_state)
+            if control.get("delete_widget") is not None:
+                control["delete_widget"].configure(state=widget_state)
             if not available:
                 control["state_var"].set("not installed")
                 control["toggle_var"].set(False)
@@ -718,6 +733,82 @@ class ManagerGUIV2(tk.Tk):
         self._append_log(f"[install] {title} installed successfully.")
         self.set_status(f"{title} installed successfully.")
         return True
+
+    def _remove_managed_block(self, path):
+        if not path.exists():
+            return
+        lines = path.read_text(encoding="utf-8").splitlines()
+        filtered = []
+        in_block = False
+        for line in lines:
+            if line == BEGIN_MARKER:
+                in_block = True
+                continue
+            if line == END_MARKER:
+                in_block = False
+                continue
+            if not in_block:
+                filtered.append(line)
+        path.write_text("\n".join(filtered).rstrip() + "\n", encoding="utf-8")
+
+    def _run_remove_package(self, package_names):
+        env = os.environ.copy()
+        env["DEBIAN_FRONTEND"] = "noninteractive"
+        if not self.apt_cache_updated:
+            update_rc = self._run_stream_command(["apt-get", "update"], env=env)
+            if update_rc != 0:
+                self._append_log(f"[remove] apt-get update failed with code {update_rc}")
+                return False
+            self.apt_cache_updated = True
+        remove_rc = self._run_stream_command(["apt-get", "remove", "-y", *package_names], env=env)
+        if remove_rc != 0:
+            self._append_log(f"[remove] apt-get remove failed with code {remove_rc}")
+            return False
+        self._run_stream_command(["apt-get", "autoremove", "-y"], env=env)
+        return True
+
+    def delete_component(self, component_key):
+        if component_key not in {"tor", "fail2ban"}:
+            return
+        title = self.component_titles[component_key]
+        response = messagebox.askyesno(
+            f"Delete {title}",
+            (
+                f"This will remove {title} package(s), stop/disable service, and "
+                "remove managed configuration blocks created by this app.\n\n"
+                "Do you want to continue?"
+            ),
+            default=messagebox.NO,
+        )
+        if not response:
+            return
+
+        if component_key == "tor":
+            self._append_log("[remove] Removing Tor and torsocks...")
+            run_command(["systemctl", "stop", self.tor_unit])
+            run_command(["systemctl", "stop", "tor@default"])
+            run_command(["systemctl", "disable", self.tor_unit])
+            run_command(["systemctl", "disable", "tor@default"])
+            self._remove_managed_block(TOR_CONFIG)
+            if self._run_remove_package(["tor", "torsocks"]):
+                self.onion_var.set("(not available yet)")
+                self.connect_cmd_var.set("torsocks ssh -p 22 <username>@<onion>.onion")
+                self.set_status("Tor removed.")
+            else:
+                messagebox.showerror("Delete Error", "Failed to remove Tor. See logs for details.")
+        else:
+            self._append_log("[remove] Removing Fail2Ban...")
+            run_command(["systemctl", "stop", self.f2b_unit])
+            run_command(["systemctl", "disable", self.f2b_unit])
+            self._remove_managed_block(F2B_CONFIG)
+            if self._run_remove_package(["fail2ban"]):
+                self.set_status("Fail2Ban removed.")
+            else:
+                messagebox.showerror("Delete Error", "Failed to remove Fail2Ban. See logs for details.")
+
+        self._update_component_status()
+        self.refresh_service_status()
+        self.refresh_logs()
 
     def _prompt_install_or_skip(self, component_key, required=False):
         title = self.component_titles[component_key]
