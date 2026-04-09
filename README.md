@@ -67,6 +67,7 @@ sudo apt install micro
 
 ```nginx
 Port 22
+#here you can change it to a port number you want, "your custom port."
 ListenAddress 127.0.0.1
 # this_is_the_localhost_ssh_will_listen_to
 PermitRootLogin no
@@ -155,7 +156,7 @@ maxretry = 3  # enter wrong password 3 times
 
 [sshd]
 enabled  = true
-port     = 22
+port     = 22 #it is 22 unless you have a custom port
 filter   = sshd
 logpath  = /var/log/auth.log
 maxretry = 3
@@ -192,6 +193,7 @@ sudo ls -l /var/lib/tor/ssh_service/
 sudo apt install -y torsocks  # if not present
 torsocks ssh -p 22 <USERNAME>@<your_onion>.onion exit
 #username is that of your Linux and your_onion is what you found in your hostname
+# it is -p 22 unless you have a custom port 
 ```
 
 If it connects asks for password it’s working.....
