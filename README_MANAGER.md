@@ -2,6 +2,12 @@
 
 This is a second README for the manager tools that were added, without changing the original `README.md`.
 
+## Project summary
+
+This project helps you run SSH privately through a Tor hidden service (`.onion`) so your server is reachable without exposing a public IP or opening router port-forwarding.
+
+In short, it gives you tools to install/configure SSH over Tor, control services (SSH/Tor/Fail2Ban), change security settings, and quickly view your onion connection details in either a GUI or CLI manager.
+
 ## Files included
 
 - `ssh_tor_manager_gui.py` - Desktop GUI app (recommended for most users)
@@ -78,6 +84,10 @@ sudo ./ssh_tor_manager.sh --show
 sudo ./ssh_tor_manager.sh --apply
 sudo ./ssh_tor_manager.sh --wizard
 ```
+
+- `--show`: displays current saved/live configuration, onion hostname, and connection command.
+- `--apply`: re-applies saved configuration to SSH/Tor/Fail2Ban immediately.
+- `--wizard`: runs guided prompts once, then applies the selected settings.
 
 ---
 
