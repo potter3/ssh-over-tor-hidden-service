@@ -927,12 +927,20 @@ class ManagerGUIV2(tk.Tk):
             messagebox.showerror("Validation Error", test_sshd.stderr.strip() or "sshd -t failed.")
             return
 
-        units_to_restart = [self.ssh_unit, self.tor_unit]
+        # Preserve runtime ON/OFF choices: apply config to running services,
+        # but do not force-start services that are currently stopped.
+        unit_states_before_apply = {}
+        units_managed = [self.ssh_unit, self.tor_unit]
         if self.component_status["fail2ban"]:
-            units_to_restart.append(self.f2b_unit)
-        for unit in units_to_restart:
-            run_command(["systemctl", "restart", unit])
-            run_command(["systemctl", "enable", unit])
+            units_managed.append(self.f2b_unit)
+        for unit in units_managed:
+            unit_states_before_apply[unit] = get_service_state(unit)
+
+        for unit in units_managed:
+            if unit_states_before_apply.get(unit) == "active":
+                run_command(["systemctl", "restart", unit])
+            else:
+                self._append_log(f"[service] {unit} is not active; preserving OFF state (not starting).")
 
         onion = ""
         for _ in range(15):
