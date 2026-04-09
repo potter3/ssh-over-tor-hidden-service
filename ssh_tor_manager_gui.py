@@ -9,6 +9,7 @@ Features:
 - Light/Dark theme toggle
 - Minimize-to-tray-like behavior (background helper window)
 - SSH speed monitor (local SSH handshake latency)
+- Install-or-skip prompts for missing SSH/Tor/Fail2Ban
 """
 
 import os
@@ -220,6 +221,23 @@ class ManagerGUIV2(tk.Tk):
             "Tor": self.tor_unit,
             "Fail2Ban": self.f2b_unit,
         }
+        self.component_packages = {
+            "ssh": "openssh-server",
+            "tor": "tor",
+            "fail2ban": "fail2ban",
+        }
+        self.component_titles = {
+            "ssh": "SSH (OpenSSH server)",
+            "tor": "Tor",
+            "fail2ban": "Fail2Ban",
+        }
+        self.component_status = {
+            "ssh": False,
+            "tor": False,
+            "fail2ban": False,
+        }
+        self.skipped_components = set()
+        self.apt_cache_updated = False
 
         self.theme_name = "dark"
         self.palette = THEMES[self.theme_name]
@@ -339,12 +357,15 @@ class ManagerGUIV2(tk.Tk):
 
         self.service_status_labels = {}
         self.toggle_widgets = {}
+        self.restart_buttons = {}
+        self.service_controls = {}
         self._build_service_row(
             "SSH",
             self.ssh_state,
             self.ssh_toggle_var,
             self.ssh_toggle_text,
             self.ssh_unit,
+            "ssh",
         )
         self._build_service_row(
             "Tor",
@@ -352,6 +373,7 @@ class ManagerGUIV2(tk.Tk):
             self.tor_toggle_var,
             self.tor_toggle_text,
             self.tor_unit,
+            "tor",
         )
         self._build_service_row(
             "Fail2Ban",
@@ -359,6 +381,7 @@ class ManagerGUIV2(tk.Tk):
             self.f2b_toggle_var,
             self.f2b_toggle_text,
             self.f2b_unit,
+            "fail2ban",
         )
 
         ttk.Button(
@@ -479,12 +502,13 @@ class ManagerGUIV2(tk.Tk):
 
         self.log_text = ScrolledText(logs_tab, wrap=tk.NONE, height=18, font=("Consolas", 10))
         self.log_text.pack(fill=tk.BOTH, expand=True)
+        self.log_text.configure(state=tk.DISABLED)
 
         ttk.Label(root, textvariable=self.status_message_var, style="StatusBar.TLabel").pack(
             fill=tk.X, side=tk.BOTTOM, pady=(10, 0)
         )
 
-    def _build_service_row(self, label, state_var, toggle_var, toggle_text_var, unit_name):
+    def _build_service_row(self, label, state_var, toggle_var, toggle_text_var, unit_name, component_key):
         row = tk.Frame(self.services_card, bg=self.palette["card"])
         row.pack(fill=tk.X, pady=4)
 
@@ -511,7 +535,153 @@ class ManagerGUIV2(tk.Tk):
         toggle.pack(side=tk.LEFT, padx=6)
         self.toggle_widgets[unit_name] = (toggle, toggle_text_var, toggle_var)
 
-        ttk.Button(row, text="Restart", command=lambda u=unit_name: self.restart_service(u)).pack(side=tk.LEFT)
+        restart_button = ttk.Button(row, text="Restart", command=lambda u=unit_name: self.restart_service(u))
+        restart_button.pack(side=tk.LEFT)
+        self.restart_buttons[unit_name] = restart_button
+        self.service_controls[component_key] = {
+            "unit": unit_name,
+            "state_var": state_var,
+            "toggle_var": toggle_var,
+            "toggle_text_var": toggle_text_var,
+            "toggle_widget": toggle,
+            "restart_widget": restart_button,
+        }
+
+    def _append_log(self, text):
+        if not text:
+            return
+        self.log_text.configure(state=tk.NORMAL)
+        self.log_text.insert(tk.END, text if text.endswith("\n") else f"{text}\n")
+        self.log_text.see(tk.END)
+        self.log_text.configure(state=tk.DISABLED)
+        self.update_idletasks()
+
+    def _run_stream_command(self, args, env=None):
+        self._append_log(f"$ {' '.join(args)}")
+        process = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=env,
+        )
+        assert process.stdout is not None
+        for line in process.stdout:
+            self._append_log(line.rstrip("\n"))
+        return process.wait()
+
+    def _detect_component_status(self, component_key):
+        if component_key == "ssh":
+            return shutil.which("sshd") is not None and SSH_CONFIG.parent.exists()
+        if component_key == "tor":
+            return shutil.which("tor") is not None and TOR_CONFIG.parent.exists()
+        if component_key == "fail2ban":
+            return F2B_CONFIG.parent.exists() and (
+                shutil.which("fail2ban-client") is not None or service_exists("fail2ban")
+            )
+        return False
+
+    def _update_component_status(self):
+        for component_key in self.component_status:
+            self.component_status[component_key] = self._detect_component_status(component_key)
+
+    def _sync_service_control_states(self):
+        for component_key, control in self.service_controls.items():
+            available = self.component_status.get(component_key, False)
+            widget_state = tk.NORMAL if available else tk.DISABLED
+            control["toggle_widget"].configure(state=widget_state)
+            control["restart_widget"].configure(state=widget_state)
+            if not available:
+                control["state_var"].set("not installed")
+                control["toggle_var"].set(False)
+                self._update_toggle_visual(control["unit"])
+                self._update_status_label_color(control["unit"])
+
+    def _install_component(self, component_key):
+        package = self.component_packages[component_key]
+        title = self.component_titles[component_key]
+        if shutil.which("apt-get") is None:
+            messagebox.showerror("Install Error", "apt-get is required to install missing components.")
+            self._append_log(f"[install] Cannot install {title}: apt-get not found.")
+            return False
+
+        env = os.environ.copy()
+        env["DEBIAN_FRONTEND"] = "noninteractive"
+        self._append_log(f"[install] Installing {title} package: {package}")
+        self.set_status(f"Installing {title}...")
+
+        if not self.apt_cache_updated:
+            update_rc = self._run_stream_command(["apt-get", "update"], env=env)
+            if update_rc != 0:
+                self._append_log(f"[install] apt-get update failed with code {update_rc}")
+                messagebox.showerror("Install Error", f"apt-get update failed while installing {title}.")
+                return False
+            self.apt_cache_updated = True
+
+        install_rc = self._run_stream_command(["apt-get", "install", "-y", package], env=env)
+        if install_rc != 0:
+            self._append_log(f"[install] apt-get install failed with code {install_rc}")
+            messagebox.showerror("Install Error", f"Failed installing {title}. See logs panel for details.")
+            return False
+
+        # Refresh component detection after successful install.
+        self._update_component_status()
+        if not self.component_status.get(component_key, False):
+            self._append_log(f"[install] {title} install command succeeded, but component still not detected.")
+            messagebox.showwarning(
+                "Install Check",
+                f"{title} was installed, but could not be fully verified. You may need to restart the app.",
+            )
+            return False
+
+        self.skipped_components.discard(component_key)
+        self._append_log(f"[install] {title} installed successfully.")
+        self.set_status(f"{title} installed successfully.")
+        return True
+
+    def _prompt_install_or_skip(self, component_key, required=False):
+        title = self.component_titles[component_key]
+        if self.component_status.get(component_key, False):
+            return True
+
+        response = messagebox.askyesno(
+            "Component Missing",
+            (
+                f"{title} is not installed or missing required files.\n\n"
+                "Do you want to install it now?\n\n"
+                "Yes = Install now\n"
+                "No = Skip"
+            ),
+            default=messagebox.YES,
+        )
+        if response:
+            return self._install_component(component_key)
+
+        self.skipped_components.add(component_key)
+        self._append_log(f"[install] {title}: skipped by user.")
+        self.set_status(f"{title} skipped.")
+        if required:
+            messagebox.showerror(
+                "Missing Required Component",
+                f"{title} is required for this action. Install it to continue.",
+            )
+        return False
+
+    def _ensure_components(self, prompt_required=False):
+        self._update_component_status()
+        for component_key in ("ssh", "tor", "fail2ban"):
+            if self.component_status[component_key]:
+                continue
+            if component_key in self.skipped_components and not prompt_required:
+                continue
+            required = prompt_required and component_key in {"ssh", "tor"}
+            ok = self._prompt_install_or_skip(component_key, required=required)
+            if required and not ok:
+                return False
+        self._update_component_status()
+        self._sync_service_control_states()
+        return True
 
     def apply_theme(self, theme_name):
         if theme_name not in THEMES:
@@ -584,26 +754,34 @@ class ManagerGUIV2(tk.Tk):
             )
 
     def refresh_service_status(self):
+        self._update_component_status()
         ssh_state = get_service_state(self.ssh_unit)
         tor_state = get_service_state(self.tor_unit)
         f2b_state = get_service_state(self.f2b_unit)
 
-        self.ssh_state.set(ssh_state)
-        self.tor_state.set(tor_state)
-        self.f2b_state.set(f2b_state)
+        self.ssh_state.set(ssh_state if self.component_status["ssh"] else "not installed")
+        self.tor_state.set(tor_state if self.component_status["tor"] else "not installed")
+        self.f2b_state.set(f2b_state if self.component_status["fail2ban"] else "not installed")
 
         self._syncing_toggles = True
-        self.ssh_toggle_var.set(ssh_state == "active")
-        self.tor_toggle_var.set(tor_state == "active")
-        self.f2b_toggle_var.set(f2b_state == "active")
+        self.ssh_toggle_var.set(self.component_status["ssh"] and ssh_state == "active")
+        self.tor_toggle_var.set(self.component_status["tor"] and tor_state == "active")
+        self.f2b_toggle_var.set(self.component_status["fail2ban"] and f2b_state == "active")
         self._syncing_toggles = False
 
         for unit_name in [self.ssh_unit, self.tor_unit, self.f2b_unit]:
             self._update_toggle_visual(unit_name)
             self._update_status_label_color(unit_name)
+        self._sync_service_control_states()
 
     def toggle_service(self, unit_name, var):
         if self._syncing_toggles:
+            return
+        component_key = "ssh" if unit_name == self.ssh_unit else "tor" if unit_name == self.tor_unit else "fail2ban"
+        if not self.component_status.get(component_key, False):
+            var.set(False)
+            self._prompt_install_or_skip(component_key, required=False)
+            self.refresh_service_status()
             return
         desired_on = bool(var.get())
         current = get_service_state(unit_name)
@@ -624,6 +802,11 @@ class ManagerGUIV2(tk.Tk):
         self.set_status(f"{unit_name}: {action} executed.")
 
     def restart_service(self, unit_name):
+        component_key = "ssh" if unit_name == self.ssh_unit else "tor" if unit_name == self.tor_unit else "fail2ban"
+        if not self.component_status.get(component_key, False):
+            self._prompt_install_or_skip(component_key, required=False)
+            self.refresh_service_status()
+            return
         result = run_command(["systemctl", "restart", unit_name])
         if result.returncode != 0:
             messagebox.showerror("Service Error", result.stderr.strip() or result.stdout.strip() or "Unknown error")
@@ -656,6 +839,7 @@ class ManagerGUIV2(tk.Tk):
             self.connect_cmd_var.set(f"torsocks ssh -p {port} <username>@<onion>.onion")
 
     def refresh_all(self):
+        self._ensure_components(prompt_required=False)
         self.refresh_service_status()
         self.refresh_config()
         self.sample_ssh_speed()
@@ -673,6 +857,8 @@ class ManagerGUIV2(tk.Tk):
         return port, int(self.max_conn_var.get())
 
     def apply_settings(self):
+        if not self._ensure_components(prompt_required=True):
+            return
         try:
             port, max_conn = self._validate_settings()
         except ValueError as exc:
@@ -684,7 +870,8 @@ class ManagerGUIV2(tk.Tk):
 
         ensure_backup(SSH_CONFIG)
         ensure_backup(TOR_CONFIG)
-        ensure_backup(F2B_CONFIG)
+        if self.component_status["fail2ban"]:
+            ensure_backup(F2B_CONFIG)
 
         ssh_block = "\n".join(
             [
@@ -727,7 +914,10 @@ class ManagerGUIV2(tk.Tk):
         try:
             write_managed_block(SSH_CONFIG, ssh_block)
             write_managed_block(TOR_CONFIG, tor_block)
-            write_managed_block(F2B_CONFIG, f2b_block)
+            if self.component_status["fail2ban"]:
+                write_managed_block(F2B_CONFIG, f2b_block)
+            else:
+                self._append_log("[config] Fail2Ban skipped (not installed).")
         except OSError as exc:
             messagebox.showerror("Write Error", f"Failed writing config files:\n{exc}")
             return
@@ -737,7 +927,10 @@ class ManagerGUIV2(tk.Tk):
             messagebox.showerror("Validation Error", test_sshd.stderr.strip() or "sshd -t failed.")
             return
 
-        for unit in [self.ssh_unit, self.tor_unit, self.f2b_unit]:
+        units_to_restart = [self.ssh_unit, self.tor_unit]
+        if self.component_status["fail2ban"]:
+            units_to_restart.append(self.f2b_unit)
+        for unit in units_to_restart:
             run_command(["systemctl", "restart", unit])
             run_command(["systemctl", "enable", unit])
 
@@ -800,11 +993,26 @@ class ManagerGUIV2(tk.Tk):
     def refresh_logs(self):
         service = self.log_service_var.get()
         unit = self.service_map.get(service, self.ssh_unit)
+        component_key = service.lower() if service.lower() in self.component_status else "ssh"
+        if service == "Fail2Ban":
+            component_key = "fail2ban"
         try:
             lines = int(self.log_lines_var.get())
         except ValueError:
             lines = 120
             self.log_lines_var.set("120")
+
+        if not self.component_status.get(component_key, False):
+            self.log_text.configure(state=tk.NORMAL)
+            self.log_text.delete("1.0", tk.END)
+            self.log_text.insert(
+                tk.END,
+                f"{service} is not installed.\nUse the service toggle to choose Install or Skip.",
+            )
+            self.log_text.configure(state=tk.DISABLED)
+            self.log_text.yview_moveto(1.0)
+            self.set_status(f"{service} not installed.")
+            return
 
         ok, output = fetch_journal_logs(unit, lines)
         self.log_text.configure(state=tk.NORMAL)
@@ -912,10 +1120,10 @@ class ManagerGUIV2(tk.Tk):
 def main():
     if os.geteuid() != 0:
         print("Run as root so the GUI can manage services and write system config files.")
-        print("Example: sudo python3 ssh_tor_manager_gui_v2.py")
+        print("Example: sudo python3 ssh_tor_manager_gui.py")
         raise SystemExit(1)
 
-    for command in ["systemctl", "journalctl", "sshd"]:
+    for command in ["systemctl", "journalctl"]:
         if shutil.which(command) is None:
             print(f"Missing required command: {command}")
             raise SystemExit(1)
