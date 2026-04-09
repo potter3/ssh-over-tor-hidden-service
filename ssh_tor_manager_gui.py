@@ -1086,7 +1086,12 @@ class ManagerGUIV2(tk.Tk):
             self.endpoint_mode_var.set("Password authentication enabled")
             self.connect_cmd_var.set(f"torsocks ssh -p {port} <username>@{target_onion}")
             self.endpoint_setup_commands = (
-                "# On the other device (password login mode)\n"
+                "# On the other device (password login mode over Tor)\n"
+                "# Install Tor SSH client tools if needed (Debian/Ubuntu/Parrot/Kali)\n"
+                "sudo apt update\n"
+                "sudo apt install -y torsocks openssh-client\n"
+                "\n"
+                "# Connect through Tor with password authentication\n"
                 f"torsocks ssh -p {port} <username>@{target_onion}\n\n"
                 "# Optional: switch to passwordless later\n"
                 "ssh-keygen -t ed25519 -a 100 -f ~/.ssh/id_ed25519_tor\n"
